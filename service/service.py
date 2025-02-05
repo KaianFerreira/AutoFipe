@@ -1,75 +1,15 @@
 import requests
-import psycopg2
 import time
 import os
 from supabase import create_client
 
-url = "https://lsrywtmpgxgehinlijky.supabase.co"
-key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxzcnl3dG1wZ3hnZWhpbmxpamt5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczODc0NDkzMiwiZXhwIjoyMDU0MzIwOTMyfQ.dyO_cQEQrDxrgcXYY_uwHAtitJvxl4Gezd65U2prjcM"
+url = os.getenv("SUPABASE_URL")
+key = os.getenv("SUPABASE_KEY")
 supabase = create_client(url, key)
-
-# Configurações do banco de dados PostgreSQL
-DB_CONFIG = {
-    "dbname": "fipe_db3",
-    "user": "postgres",
-    "password": "postgres",
-    "host": "localhost",
-    "port": "5432"
-}
-
 
 
 # Endpoints da API da FIPE
 BASE_URL = "https://veiculos.fipe.org.br/api/veiculos"
-
-# Conectar ao banco de dados
-def conectar_db():
-    return psycopg2.connect(**DB_CONFIG)
-
-# Criar tabelas no PostgreSQL
-def criar_tabelas():
-    conn = conectar_db()
-    cur = conn.cursor()
-    
-    cur.execute("""
-                
-        CREATE TABLE IF NOT EXISTS tabela_referencia (
-            codigo int PRIMARY KEY,
-            mes VARCHAR(50)
-        );
-        
-        CREATE TABLE IF NOT EXISTS marcas (
-            codigo VARCHAR(50) PRIMARY KEY,
-            nome VARCHAR(100)
-        );
-
-        CREATE TABLE IF NOT EXISTS modelos (
-            codigo VARCHAR(50) PRIMARY KEY,
-            nome VARCHAR(100),
-            marca_id VARCHAR REFERENCES marcas(codigo)
-        );
-
-        CREATE TABLE IF NOT EXISTS anos_modelo (
-            codigo VARCHAR(50) PRIMARY KEY,
-            descricao VARCHAR(50),
-            modelo_id VARCHAR REFERENCES modelos(codigo)
-        );
-
-        CREATE TABLE IF NOT EXISTS veiculos (
-            id SERIAL PRIMARY KEY,
-            codigo_fipe VARCHAR(20),
-            marca VARCHAR(100),
-            modelo_id INT REFERENCES modelos(codigo),
-            ano INT,
-            combustivel VARCHAR(20),
-            preco DECIMAL(10,2),
-            mes_referencia INT REFERENCES tabela_referencia(codigo)
-        );
-    """)
-    
-    conn.commit()
-    cur.close()
-    conn.close()
 
 # Faz uma requisição POST à API da FIPE
 CONTADOR = 0
@@ -80,14 +20,16 @@ def requisitar_api(endpoint, payload):
         "Content-Type": "application/x-www-form-urlencoded"
     }
 
-    try:
-        response = requests.post(f"{BASE_URL}/{endpoint}", data=payload, headers=headers)
-        time.sleep(1)
-
-        return response.json()
-    except requests.exceptions.JSONDecodeError:
-        print(f"Erro ao decodificar JSON. Resposta recebida: {response.text}")
-        raise
+    while True:
+        try:
+            response = requests.post(f"{BASE_URL}/{endpoint}", data=payload, headers=headers)
+            response.raise_for_status()  # Levanta uma exceção para códigos de status HTTP de erro
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Erro na requisição: {e}. Tentando novamente...")
+        except requests.exceptions.JSONDecodeError:
+            print(f"Erro ao decodificar JSON. Resposta recebida: {response.text}")
+            raise
 
 # Obtém a tabela de referência mais recente
 def obter_tabela_referencia():

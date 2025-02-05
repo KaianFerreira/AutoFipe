@@ -1,0 +1,5 @@
+Remeber to set the supabase variable on your os
+
+
+export SUPABASE_URL="sua_url_aqui"
+export SUPABASE_KEY="seu_key_aqui"
