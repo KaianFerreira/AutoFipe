@@ -1,10 +1,16 @@
 import requests
 import psycopg2
 import time
+import os
+from supabase import create_client
+
+url = "https://lsrywtmpgxgehinlijky.supabase.co"
+key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxzcnl3dG1wZ3hnZWhpbmxpamt5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTczODc0NDkzMiwiZXhwIjoyMDU0MzIwOTMyfQ.dyO_cQEQrDxrgcXYY_uwHAtitJvxl4Gezd65U2prjcM"
+supabase = create_client(url, key)
 
 # Configurações do banco de dados PostgreSQL
 DB_CONFIG = {
-    "dbname": "fipe_db",
+    "dbname": "fipe_db3",
     "user": "postgres",
     "password": "postgres",
     "host": "localhost",
@@ -28,36 +34,32 @@ def criar_tabelas():
     cur.execute("""
                 
         CREATE TABLE IF NOT EXISTS tabela_referencia (
-            id SERIAL PRIMARY KEY,
-            codigo INT UNIQUE,
+            codigo int PRIMARY KEY,
             mes VARCHAR(50)
         );
         
         CREATE TABLE IF NOT EXISTS marcas (
-            id SERIAL PRIMARY KEY,
-            codigo INT UNIQUE,
+            codigo VARCHAR(50) PRIMARY KEY,
             nome VARCHAR(100)
         );
 
         CREATE TABLE IF NOT EXISTS modelos (
-            id SERIAL PRIMARY KEY,
-            codigo INT UNIQUE,
+            codigo VARCHAR(50) PRIMARY KEY,
             nome VARCHAR(100),
-            marca_id INT REFERENCES marcas(codigo)
+            marca_id VARCHAR REFERENCES marcas(codigo)
         );
 
         CREATE TABLE IF NOT EXISTS anos_modelo (
-            id SERIAL PRIMARY KEY,
-            codigo VARCHAR(50) UNIQUE,
+            codigo VARCHAR(50) PRIMARY KEY,
             descricao VARCHAR(50),
-            modelo_id INT REFERENCES modelos(codigo)
+            modelo_id VARCHAR REFERENCES modelos(codigo)
         );
 
         CREATE TABLE IF NOT EXISTS veiculos (
             id SERIAL PRIMARY KEY,
             codigo_fipe VARCHAR(20),
             marca VARCHAR(100),
-            modelo VARCHAR(100),
+            modelo_id INT REFERENCES modelos(codigo),
             ano INT,
             combustivel VARCHAR(20),
             preco DECIMAL(10,2),
@@ -80,14 +82,7 @@ def requisitar_api(endpoint, payload):
 
     try:
         response = requests.post(f"{BASE_URL}/{endpoint}", data=payload, headers=headers)
-        
-        if CONTADOR == 10:
-            print("Esperando 3 segundos para evitar timeout...")
-            time.sleep(3)
-            CONTADOR = 0
-        else:
-            time.sleep(1)
-            CONTADOR += 1
+        time.sleep(1)
 
         return response.json()
     except requests.exceptions.JSONDecodeError:
@@ -147,108 +142,121 @@ def obter_valor_veiculo(codigo_tabela, codigo_marca, codigo_modelo, ano_modelo):
 
 # Insere os dados no banco de dados
 def salvar_no_banco(tabela, dados):
-    conn = conectar_db()
-    cur = conn.cursor()
-    
     if tabela == "tabela_referencia":
-        cur.execute("INSERT INTO tabela_referencia (codigo, mes) VALUES (%s, %s) ON CONFLICT (codigo) DO NOTHING", (dados["Codigo"], dados["Mes"]))
+        supabase.table('tabela_referencia').upsert({
+            'codigo': dados["Codigo"],
+            'mes': dados["Mes"]
+        }).execute()
     
-    if tabela == "marcas":
-        cur.execute("INSERT INTO marcas (codigo, nome) VALUES (%s, %s) ON CONFLICT (codigo) DO NOTHING", (dados["Value"], dados["Label"]))
+    elif tabela == "marcas":
+        supabase.table('marcas').upsert({
+            'codigo': dados["Value"],
+            'nome': dados["Label"]
+        }).execute()
 
     elif tabela == "modelos":
-        cur.execute("INSERT INTO modelos (codigo, nome, marca_id) VALUES (%s, %s, %s) ON CONFLICT (codigo) DO NOTHING",
-                    (dados["Value"], dados["Label"], dados["marca_id"]))
+        supabase.table('modelos').upsert({
+            'codigo': dados["Value"],
+            'nome': dados["Label"],
+            'marca_id': dados["marca_id"]
+        }).execute()
 
     elif tabela == "anos_modelo":
-        cur.execute("INSERT INTO anos_modelo (codigo, descricao, modelo_id) VALUES (%s, %s, %s) ON CONFLICT (codigo) DO NOTHING",
-                    (dados["Value"], dados["Label"], dados["modelo_id"]))
+        supabase.table('anos_modelo').upsert({
+            'codigo': dados["Value"],
+            'descricao': dados["Label"],
+            'modelo_id': dados["modelo_id"]
+        }).execute()
 
     elif tabela == "veiculos":
-        # Verifica se o veículo já existe com base no codigo_fipe e mes_referencia
-        cur.execute("""
-            SELECT id FROM veiculos 
-            WHERE codigo_fipe = %s AND mes_referencia = %s
-        """, (dados["CodigoFipe"], dados["MesReferencia"]))
+        preco = float(dados["Valor"].replace("R$ ", "").replace(".", "").replace(",", "."))
+        
+        supabase.table('veiculos').upsert({
+            'codigo_fipe': dados["CodigoFipe"],
+            'marca': dados["Marca"],
+            'modelo': dados["Modelo"],
+            'ano': dados["AnoModelo"],
+            'combustivel': dados["Combustivel"],
+            'preco': preco,
+            'mes_referencia': dados["MesReferencia"]
+        }).execute()
 
-        veiculo_existe = cur.fetchone()
+def get_marcas():
+    response = supabase.table('marcas').select('codigo', 'nome').execute()
+    marcas = response.data
+    return [{"Value": marca['codigo'], "Label": marca['nome']} for marca in marcas]
 
-        if veiculo_existe:
-            # Se o veículo já existe, faz um UPDATE com os dados fornecidos
-            cur.execute("""
-                UPDATE veiculos 
-                SET marca = %s, modelo = %s, ano = %s, combustivel = %s, preco = %s 
-                WHERE codigo_fipe = %s AND mes_referencia = %s
-            """, (
-                dados["Marca"], dados["Modelo"],
-                dados["AnoModelo"],
-                dados["Combustivel"],
-                float(dados["Valor"].replace("R$ ", "").replace(".", "").replace(",", ".")),
-                dados["CodigoFipe"],
-                dados["MesReferencia"]
-            ))
-        else:
-            # Se o veículo não existe, insere o novo registro
-            cur.execute("""
-                INSERT INTO veiculos (
-                    codigo_fipe,
-                    marca,
-                    modelo,
-                    ano,
-                    combustivel,
-                    preco,
-                    mes_referencia
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (
-                dados["CodigoFipe"],
-                dados["Marca"], dados["Modelo"],
-                dados["AnoModelo"],
-                dados["Combustivel"],
-                float(dados["Valor"].replace("R$ ", "").replace(".", "").replace(",", ".")),
-                dados["MesReferencia"]
-            ))
+def get_modelos_by_marca(marca_id):
+    response = supabase.table('modelos').select('codigo', 'nome').eq('marca_id', marca_id).execute()
+    modelos = response.data
+    return [{"Value": modelo['codigo'], "Label": modelo['nome']} for modelo in modelos]
 
-    conn.commit()
-    cur.close()
-    conn.close()
+def get_anos_by_modelo(modelo_id):
+    response = supabase.table('anos_modelo').select('codigo', 'descricao').eq('modelo_id', modelo_id).execute()
+    anos = response.data
+    return [{"Value": ano['codigo'], "Label": ano['descricao']} for ano in anos]
 
 # Função principal para rodar o scraping e salvar no banco
 def rodar_scraping():
-    criar_tabelas()
+    print("\n=== Iniciando processo de scraping ===")
+    print("Etapa 1/5: Obtendo referência...")
     codigo_tabela = obter_tabela_referencia()
     
     salvar_no_banco("tabela_referencia", codigo_tabela)
-    
     codigo_tabela = codigo_tabela['Codigo']
-    # Buscar marcas
+    
+    print("\nEtapa 2/5: Obtendo marcas...")
     marcas = obter_marcas(codigo_tabela)
     for marca in marcas:
         salvar_no_banco("marcas", marca)
+        print(f"✓ Marca processada: {marca['Label']}")
 
-        # Buscar modelos
+    print("\nEtapa 3/5: Obtendo modelos...")
+    total_marcas = len(marcas)
+    for i, marca in enumerate(marcas, 1):    
+        print(f"\nProcessando modelos da marca {marca['Label']} ({i}/{total_marcas})")
         modelos = obter_modelos(codigo_tabela, marca["Value"])
+        
         for modelo in modelos:
             modelo["marca_id"] = marca["Value"]
             salvar_no_banco("modelos", modelo)
+            print(f"✓ Modelo salvo: {modelo['Label']}", end='\r')
 
-        for modelo in modelos:
-            # Buscar anos disponíveis
+    print("\nEtapa 4/5: Obtendo anos dos modelos...")
+    for i, marca in enumerate(marcas, 1):
+        print(f"\nProcessando anos para marca {marca['Label']} ({i}/{total_marcas})")
+        modelos = obter_modelos(codigo_tabela, marca["Value"])
+        total_modelos = len(modelos)
+        
+        for j, modelo in enumerate(modelos, 1):
+            print(f"Modelo {j}/{total_modelos}: {modelo['Label']}")
             anos_modelo = obter_anos_modelo(codigo_tabela, marca["Value"], modelo["Value"])
             for ano in anos_modelo:
                 ano["modelo_id"] = modelo["Value"]
                 salvar_no_banco("anos_modelo", ano)
-
-                # Buscar valor do veículo
-                valor_veiculo = obter_valor_veiculo(codigo_tabela, marca["Value"], modelo["Value"], ano["Value"])
-                
-                print(
-                    "Marca: " + valor_veiculo['Marca'] + ", " +
-                    "Modelo: " + valor_veiculo['Modelo'] + ", " +
-                    "Ano: " + str(valor_veiculo['AnoModelo']) + ", " +
-                    "Preço: " + str(valor_veiculo['Valor'])
-                )
+                print(f"✓ Ano processado: {ano['Label']}", end='\r')
+    
+    print("\nEtapa 5/5: Obtendo valores dos veículos...")
+    marcas = get_marcas()
+    total_marcas = len(marcas)
+    
+    for i, marca in enumerate(marcas, 1):
+        print(f"\nProcessando valores para marca {marca['Label']} ({i}/{total_marcas})")
+        modelos = get_modelos_by_marca(marca["Value"])
+        total_modelos = len(modelos)
+        
+        for j, modelo in enumerate(modelos, 1):
+            print(f"Modelo {j}/{total_modelos}: {modelo['Label']}")
+            anos = get_anos_by_modelo(modelo["Value"])
+            total_anos = len(anos)
+            
+            for k, ano in enumerate(anos, 1):
+                print(f"Processando ano {k}/{total_anos}: {ano['Label']}", end='\r')
+                valor_veiculo = obter_valor_veiculo(codigo_tabela, marca["Value"], 
+                                                  modelo["Value"], ano["Value"])
                 salvar_no_banco("veiculos", valor_veiculo)
+
+    print("\n\n=== Processo de scraping finalizado com sucesso! ===")
 
 if __name__ == "__main__":
     rodar_scraping()
