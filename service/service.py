@@ -148,23 +148,52 @@ async def obter_anos_modelo(codigo_tabela, codigo_marca, codigo_modelo):
 
 # Obtém o valor FIPE de um veículo específico
 async def obter_valor_veiculo(codigo_tabela, codigo_marca, codigo_modelo, ano_modelo):
-    print(codigo_tabela, codigo_marca, codigo_modelo, ano_modelo)
-    ano, combustivel = ano_modelo.split("-")
-    payload = {
-        "codigoTabelaReferencia": codigo_tabela,
-        "codigoMarca": codigo_marca,
-        "codigoModelo": codigo_modelo,
-        "codigoTipoVeiculo": 1,
-        "anoModelo": ano,
-        "codigoTipoCombustivel": combustivel,
-        "tipoConsulta": "tradicional"
-    }
-    
-    response = await requisitar_api("ConsultarValorComTodosParametros", payload)
-    
-    response['MesReferencia'] = codigo_tabela
-    
-    return response
+    try:
+        print(f"Iniciando consulta: {codigo_tabela}, {codigo_marca}, {codigo_modelo}, {ano_modelo}")
+        ano, combustivel = ano_modelo.split("-")
+        payload = {
+            "codigoTabelaReferencia": codigo_tabela,
+            "codigoMarca": codigo_marca,
+            "codigoModelo": codigo_modelo,
+            "codigoTipoVeiculo": 1,
+            "anoModelo": ano,
+            "codigoTipoCombustivel": combustivel,
+            "tipoConsulta": "tradicional"
+        }
+        
+        response = await requisitar_api("ConsultarValorComTodosParametros", payload)
+        if not response:
+            print(f"Erro: Resposta vazia para veículo {codigo_modelo} ano {ano_modelo}")
+            return None
+            
+        print(f"Resposta recebida com sucesso: {response}")
+        
+        response['MesReferencia'] = codigo_tabela
+        
+        # Tenta salvar no banco
+        try:
+            preco = float(response["Valor"].replace("R$ ", "").replace(".", "").replace(",", "."))
+            dados_veiculo = {
+                'marca_id': codigo_marca,
+                'modelo_id': codigo_modelo,
+                'ano_id': ano_modelo,
+                'mes_referencia_id': codigo_tabela,
+                'codigo_fipe': response["CodigoFipe"],
+                'combustivel': response["Combustivel"],
+                'preco': preco,
+            }
+            print(f"Tentando salvar no banco: {dados_veiculo}")
+            salvar_no_banco("veiculos", dados_veiculo)
+            print("Salvo com sucesso!")
+        except Exception as e:
+            print(f"Erro ao salvar no banco: {e}")
+            raise
+            
+        return response
+        
+    except Exception as e:
+        print(f"Erro em obter_valor_veiculo: {e}")
+        return None
 
 def retry_on_connection_error(max_retries=3, delay=1):
     def decorator(func):
@@ -185,44 +214,59 @@ def retry_on_connection_error(max_retries=3, delay=1):
 
 @retry_on_connection_error()
 def salvar_no_banco(tabela, dados):
-    if tabela == "tabela_referencia":
-        response = supabase.table('tabela_referencia').upsert({
-            'codigo': dados["Codigo"],
-            'mes': dados["Mes"]
-        }).execute()
-    
-    elif tabela == "marcas":
-        response = supabase.table('marcas').upsert({
-            'codigo': dados["Value"],
-            'nome': dados["Label"]
-        }).execute()
+    try:
+        print(f"Iniciando salvamento na tabela {tabela}")
+        
+        if tabela == "veiculos":
+            print(f"Dados do veículo para salvar: {dados}")
+            # Primeiro verifica se já existe
+            existing = supabase.table('veiculos')\
+                .select('*')\
+                .eq('marca_id', dados['marca_id'])\
+                .eq('modelo_id', dados['modelo_id'])\
+                .eq('ano_id', dados['ano_id'])\
+                .eq('mes_referencia_id', dados['mes_referencia_id'])\
+                .execute()
+            
+            if existing.data:
+                print("Veículo já existe no banco, pulando...")
+                return existing
+            
+            response = supabase.table('veiculos').insert(dados).execute()
+            print(f"Resposta do Supabase: {response}")
+            return response
+            
+        elif tabela == "tabela_referencia":
+            response = supabase.table('tabela_referencia').upsert({
+                'codigo': dados["Codigo"],
+                'mes': dados["Mes"]
+            }).execute()
+        
+        elif tabela == "marcas":
+            response = supabase.table('marcas').upsert({
+                'codigo': dados["Value"],
+                'nome': dados["Label"]
+            }).execute()
 
-    elif tabela == "modelos":
-        response = supabase.table('modelos').upsert({
-            'codigo': dados["Value"],
-            'nome': dados["Label"],
-            'marca_id': dados["marca_id"]
-        }).execute()
+        elif tabela == "modelos":
+            response = supabase.table('modelos').upsert({
+                'codigo': dados["Value"],
+                'nome': dados["Label"],
+                'marca_id': dados["marca_id"]
+            }).execute()
 
-    elif tabela == "anos_modelo":
-        response = supabase.table('anos_modelo').upsert({
-            'codigo': dados["Value"],
-            'descricao': dados["Label"],
-            'modelo_id': dados["modelo_id"]
-        }).execute()
-
-    elif tabela == "veiculos":
-        response = supabase.table('veiculos').upsert({
-            'marca_id': dados["marca_id"],
-            'modelo_id': dados["modelo_id"],
-            'ano_id': dados["ano_id"],
-            'mes_referencia_id': dados["mes_referencia_id"],
-            'codigo_fipe': dados["codigo_fipe"],
-            'combustivel': dados["combustivel"],
-            'preco': dados["preco"],
-        }).execute()
-    
-    return response
+        elif tabela == "anos_modelo":
+            response = supabase.table('anos_modelo').upsert({
+                'codigo': dados["Value"],
+                'descricao': dados["Label"],
+                'modelo_id': dados["modelo_id"]
+            }).execute()
+        
+        return response
+    except Exception as e:
+        print(f"Erro ao salvar no banco (tabela {tabela}): {e}")
+        print(f"Dados que tentamos salvar: {dados}")
+        raise
 
 def get_mes_referencia():
     response = supabase.table('tabela_referencia').select('*').execute()
@@ -292,20 +336,20 @@ async def rodar_scraping():
     update_progress("4", "Obtendo anos dos modelos")
     marcas = get_marcas()
     total_marcas = len(marcas)
-    for i, marca in enumerate(marcas, 1):
-        modelos = get_modelos_by_marca(marca["Value"])
-        total_modelos = len(modelos)
+    # for i, marca in enumerate(marcas, 1):
+    #     modelos = get_modelos_by_marca(marca["Value"])
+    #     total_modelos = len(modelos)
         
-        for j, modelo in enumerate(modelos, 1):
-            anos_modelo = await obter_anos_modelo(codigo_tabela, marca["Value"], modelo["Value"])
-            total_anos = len(anos_modelo)
+    #     for j, modelo in enumerate(modelos, 1):
+    #         anos_modelo = await obter_anos_modelo(codigo_tabela, marca["Value"], modelo["Value"])
+    #         total_anos = len(anos_modelo)
             
-            for k, ano in enumerate(anos_modelo, 1):
-                update_progress("4",
-                              f"Marca: {marca['Label']} ({i}/{total_marcas})",
-                              f"Modelo: {modelo['Label']} ({j}/{total_modelos}) - Ano: {ano['Label']} ({k}/{total_anos})")
-                ano["modelo_id"] = modelo["Value"]
-                salvar_no_banco("anos_modelo", ano)
+    #         for k, ano in enumerate(anos_modelo, 1):
+    #             update_progress("4",
+    #                           f"Marca: {marca['Label']} ({i}/{total_marcas})",
+    #                           f"Modelo: {modelo['Label']} ({j}/{total_modelos}) - Ano: {ano['Label']} ({k}/{total_anos})")
+    #             ano["modelo_id"] = modelo["Value"]
+    #             salvar_no_banco("anos_modelo", ano)
     
     update_progress("5", "Obtendo valores dos veículos")
     meses = get_mes_referencia()
@@ -333,7 +377,6 @@ async def rodar_scraping():
                         modelo["Value"],
                         ano["Value"]
                     )
-                    
                     if valor_veiculo:
                         salvar_no_banco("veiculos", {
                             'marca_id': marca["Value"],
